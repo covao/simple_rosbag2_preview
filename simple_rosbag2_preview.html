@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Simple rosbag2 preview</title>
+  <style>
+    :root { --fg:#0f172a; --muted:#64748b; --bg:#f8fafc; --card:#ffffff; --pri:#2563eb; --pri-2:#1d4ed8; --border:#e2e8f0; }
+    body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; color:var(--fg); background:var(--bg); }
+    header { padding:20px; }
+    h1 { margin:0 0 6px; font-size:22px; }
+    p.sub { margin:0; color:var(--muted); }
+    .container { max-width:1000px; margin:0 auto; padding:0 20px 40px; }
+    .uploader { display:grid; gap:14px; margin:20px 0; }
+    .controls { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+    input[type=file]{ display:none; }
+    .btn { display:inline-flex; align-items:center; gap:8px; cursor:pointer; background:var(--pri); color:#fff; border:none; border-radius:10px; padding:10px 14px; font-weight:600; }
+    .btn:hover { background:var(--pri-2); }
+    .dropzone { border:2px dashed var(--border); border-radius:14px; padding:22px; background:var(--card); color:var(--muted); text-align:center; }
+    .dropzone.dragover { border-color:var(--pri); background:#eef2ff; color:var(--pri-2); }
+    .panel { background:var(--card); border:1px solid var(--border); border-radius:14px; padding:16px; }
+    .stats { display:flex; gap:16px; flex-wrap:wrap; align-items:center; }
+    .badge { background:#eff6ff; color:#1d4ed8; padding:6px 10px; border-radius:999px; font-weight:700; }
+    .toolbar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:10px; }
+    .input { border:1px solid var(--border); border-radius:10px; padding:8px 10px; min-width:260px; background:#fff; }
+    .table-wrapper { max-height:300px; overflow-y:auto; border:1px solid var(--border); border-radius:10px; margin-top:10px; }
+    table { width:100%; border-collapse:collapse; }
+    thead th { text-align:left; font-size:12px; color:var(--muted); font-weight:700; border-bottom:1px solid var(--border); padding:6px 8px; position:sticky; top:0; background:#fff; }
+    tbody td { padding:4px 8px; border-bottom:1px solid var(--border); vertical-align:middle; line-height:1.2; }
+    tbody tr:hover { background:#f8fafc; cursor:pointer; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New", monospace; }
+    .hidden { display:none !important; }
+    .error { color:#b91c1c; background:#fee2e2; border:1px solid #fecaca; padding:10px; border-radius:10px; }
+    .status { color:#334155; font-size:14px; }
+    .logpanel { background:var(--card); border:1px dashed var(--border); border-radius:14px; padding:12px; }
+    .logpanel pre { margin:8px 0 0; max-height:220px; overflow:auto; background:#0b1020; color:#c7d2fe; padding:10px; border-radius:10px; font-size:12px; }
+    .table-wrap { max-height:360px; overflow:auto; border:1px solid var(--border); border-radius:12px; margin-top:10px; background:#fff; }
+    table { margin:0; }
+    .info-box { margin-top:10px; padding:10px; border:1px solid var(--border); border-radius:10px; background:#f1f5f9; font-size:14px; color:#0f172a; display:none; }
+  </style>
+</head>
+<body>
+  <header class="container">
+    <h1>Simple rosbag2 preview</h1>
+    <p class="sub">Load a *.db3 file (rosbag2 SQLite) to list topics from the <code class="mono">topics</code> table.</p>
+  </header>
+  <main class="container">
+    <section class="uploader">
+      <div class="controls">
+        <label class="btn" for="fileInput">📂 Select File</label>
+        <input id="fileInput" type="file" accept=".db3" />
+        <span>or drag & drop below</span>
+      </div>
+      <div id="dropzone" class="dropzone">Drag & Drop <strong>.db3</strong> here</div>
+      <div id="status" class="status">Idle...</div>
+      <div id="errorBox" class="error hidden"></div>
+    </section>
+    <section class="logpanel">
+      <pre id="logArea" class="mono"></pre>
+    </section>
+    <section id="result" class="panel hidden">
+      <div class="stats">
+        <div>File: <span id="fileName" class="mono">-</span></div>
+        <div>Size: <span id="fileSize" class="mono">-</span></div>
+        <div class="badge">Topics: <span id="topicCount">0</span></div>
+      </div>
+      <div class="toolbar">
+        <input id="filterInput" class="input mono" type="text" placeholder="Filter" />
+        <button id="copyBtn" class="btn">📋 Copy List</button>
+      </div>
+      <div class="table-wrapper">
+        <div class="table-wrap">
+        <table>
+          <thead><tr><th>Topic Name</th><th>Type</th></tr></thead>
+          <tbody id="topicBody"></tbody>
+        </table>
+      </div>
+      </div>
+      <div id="infoBox" class="info-box"></div>
+    </section>
+  </main>
+  <script src="https://cdn.jsdelivr.net/npm/sql.js@1.10.2/dist/sql-wasm.js"></script>
+  <script>
+  (function(){
+    function fmtBytes(n){ if(!isFinite(n)) return '-'; var u=['B','KB','MB','GB']; var i=Math.floor(Math.log(Math.max(n,1))/Math.log(1024)); return (n/Math.pow(1024,i)).toFixed(i?1:0)+' '+u[i]; }
+    var els={};
+    var t0=performance.now();
+    function now(){return (performance.now()-t0).toFixed(1)+'ms';}
+    function clearLog(){els.logArea.textContent=''; t0=performance.now();}
+    function log(msg){ console.log(msg); if(!els.logArea) return; els.logArea.textContent += '['+now()+'] '+msg+'\n'; els.logArea.scrollTop=els.logArea.scrollHeight; }
+    function setStatus(t){els.status.textContent=t;}
+
+    var SQL=null; var sqlReady=null; var DB=null;
+    function initSql(){ if(sqlReady) return sqlReady; log('Loading sql.js'); sqlReady=initSqlJs({ locateFile:(f)=>'https://cdn.jsdelivr.net/npm/sql.js@1.10.2/dist/'+f }).then((L)=>{SQL=L;log('sql.js loaded');}); return sqlReady; }
+
+    function handleFile(file){
+      if(!file) return;
+      clearLog();
+      setStatus('Loading...');
+      log('File:'+file.name+' size='+fmtBytes(file.size));
+      initSql().then(()=>file.arrayBuffer()).then((buf)=>{
+        log('ArrayBuffer length:'+buf.byteLength);
+        if(DB){ try{DB.close();}catch(_){} }
+        DB=new SQL.Database(new Uint8Array(buf));
+        log('DB opened');
+        var tables=DB.exec("SELECT name FROM sqlite_master WHERE type='table'");
+        var tnames=(tables[0]&&tables[0].values)?tables[0].values.flat():[];
+        log('Tables:'+tnames.join(','));
+        var tbl=tnames.includes('topics')?'topics':'topic';
+        var res=DB.exec('SELECT id,name,type FROM '+tbl);
+        var rows=(res[0]&&res[0].values)?res[0].values:[];
+        log('Rows:'+rows.length);
+        renderResult(file,rows);
+        setStatus('Done');
+      }).catch((e)=>{ log('Error:'+e.message); setStatus('Error'); showError(e.message); });
+    }
+
+    function renderResult(file,rows){
+      els.result.classList.remove('hidden');
+      els.fileName.textContent=file.name;
+      els.fileSize.textContent=fmtBytes(file.size);
+      els.topicCount.textContent=rows.length;
+      els.topicBody.innerHTML='';
+      rows.forEach((r)=>{
+        var tr=document.createElement('tr');
+        tr.innerHTML='<td class="mono">'+esc(r[1])+'</td><td class="mono">'+esc(r[2])+'</td>';
+        tr.addEventListener('click',()=>showTopicInfo(r[0], r[1]));
+        els.topicBody.appendChild(tr);
+      });
+      applyFilter();
+    }
+
+    function showTopicInfo(id,name){
+      if(!DB) return;
+      try{
+        var q=`SELECT COUNT(*) c, MIN(timestamp) mn, MAX(timestamp) mx FROM messages WHERE topic_id=${id}`;
+        var r=DB.exec(q);
+        if(r && r[0] && r[0].values && r[0].values[0]){
+          var [c,mn,mx]=r[0].values[0];
+          var dur=(mx-mn)/1e9;
+          var hz=dur>0?(c/dur).toFixed(2):'—';
+          els.infoBox.textContent=`${name}: count=${c}, span=${dur.toFixed(2)}s, ~${hz} Hz`;
+          els.infoBox.style.display='block';
+        }
+      }catch(e){ log('Info error:'+e.message); }
+    }
+
+    function applyFilter(){
+      var q=els.filterInput.value.toLowerCase();
+      Array.from(els.topicBody.querySelectorAll('tr')).forEach((tr)=>{
+        tr.classList.toggle('hidden',!tr.textContent.toLowerCase().includes(q));
+      });
+    }
+
+    function copyVisibleTopics(){
+      var names=Array.from(els.topicBody.querySelectorAll('tr')).filter(tr=>!tr.classList.contains('hidden')).map(tr=>tr.querySelector('td').textContent);
+      navigator.clipboard.writeText(names.join('\n')).then(()=>{els.copyBtn.textContent='✅ Copied'; setTimeout(()=>els.copyBtn.textContent='📋 Copy List',1200);});
+    }
+
+    function esc(s){var map={'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'};return String(s||'').replace(/[&<>\"]/g,(c)=>map[c]);}
+    function showError(m){els.errorBox.textContent=m; els.errorBox.classList.remove('hidden');}
+    function hideError(){els.errorBox.classList.add('hidden');}
+
+    function setupDnD(){
+      var dz=els.dropzone;
+      ['dragenter','dragover'].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.add('dragover');}));
+      ['dragleave','dragend','drop'].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.remove('dragover');}));
+      dz.addEventListener('drop',e=>{var f=e.dataTransfer.files[0];if(f)handleFile(f);});
+    }
+
+    window.addEventListener('DOMContentLoaded',()=>{
+      els.fileInput=document.getElementById('fileInput');
+      els.dropzone=document.getElementById('dropzone');
+      els.errorBox=document.getElementById('errorBox');
+      els.status=document.getElementById('status');
+      els.result=document.getElementById('result');
+      els.fileName=document.getElementById('fileName');
+      els.fileSize=document.getElementById('fileSize');
+      els.topicCount=document.getElementById('topicCount');
+      els.topicBody=document.getElementById('topicBody');
+      els.filterInput=document.getElementById('filterInput');
+      els.copyBtn=document.getElementById('copyBtn');
+      els.logArea=document.getElementById('logArea');
+      els.infoBox=document.getElementById('infoBox');
+
+      setupDnD();
+      initSql();
+      els.fileInput.addEventListener('change',e=>handleFile(e.target.files[0]));
+      els.filterInput.addEventListener('input',applyFilter);
+      els.copyBtn.addEventListener('click',copyVisibleTopics);
+    });
+  })();
+  </script>
+</body>
+</html>
