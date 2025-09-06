@@ -9,6 +9,7 @@ The tool is implemented as a single HTML+JavaScript file. No server or ROS2 envi
 ## Quick Start
 
 👉 [Open Simple ROS2 Bag Preview](https://covao.github.io/simple_rosbag2_preview/simple_rosbag2_preview.html)
+![simple_rosbag2_preview.gif](./img/simple_rosbag2_preview.gif)
 
 ## Usage
 
